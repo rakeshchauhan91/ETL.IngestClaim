@@ -1,0 +1,11 @@
+pandas==2.2.2
+pydantic==2.7.4
+SQLAlchemy==2.0.31
+psycopg2-binary==2.9.9
+python-dotenv==1.0.1
+pyarrow==16.1.0
+azure-storage-blob==12.20.0
+azure-monitor-opentelemetry==1.6.1
+faker==25.9.1
+tenacity==8.4.2
+pytest==8.2.2

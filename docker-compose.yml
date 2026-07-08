@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: health_dw_postgres
+    environment:
+      POSTGRES_DB: health_dw
+      POSTGRES_USER: etl_user
+      POSTGRES_PASSWORD: etl_password_local_only
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U etl_user -d health_dw"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: health_dw_azurite
+    command: "azurite-blob --blobHost 0.0.0.0 --loose"
+    ports:
+      - "10000:10000"
+
+  seed-landing:
+    build: .
+    container_name: health_dw_seed
+    entrypoint: ["python", "-m", "data.seed_landing"]
+    env_file: .env
+    depends_on:
+      azurite:
+        condition: service_started
+    volumes:
+      - ./data:/app/data
+
+  pipeline:
+    build: .
+    container_name: health_dw_pipeline
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      azurite:
+        condition: service_started
+
+volumes:
+  pgdata:

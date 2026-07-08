@@ -1,0 +1,13 @@
+# Copy this file to .env for local docker-compose runs
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;
+LANDING_CONTAINER=landing
+BRONZE_CONTAINER=bronze
+PG_HOST=postgres
+PG_PORT=5432
+PG_DB=health_dw
+PG_USER=etl_user
+PG_PASSWORD=etl_password_local_only
+LOG_LEVEL=INFO
+MAX_QUARANTINE_RATE=0.10
+BATCH_DATE=
+APPLICATIONINSIGHTS_CONNECTION_STRING=
