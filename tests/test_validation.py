@@ -7,6 +7,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pandas as pd
+import pytest
 from datetime import date, timedelta
 from src.validation import validate_dataframe
 from src.models import PatientRecord, ClaimRecord, EncounterRecord
@@ -77,3 +78,67 @@ def test_nan_optional_field_normalized_to_none():
     good, bad, rate = validate_dataframe(df, PatientRecord, "patient")
     assert len(good) == 1
     assert good.iloc[0]["chronic_conditions"] is None
+
+
+# ---------------- Ingestion: chunked streaming + failure isolation ----------------
+
+def test_stream_landing_csv_chunks_splits_correctly(monkeypatch):
+    import src.ingestion as ing
+
+    class FakeBlobClient:
+        def exists(self):
+            return True
+
+        def download_blob(self):
+            class R:
+                def readall(_self):
+                    rows = "\n".join(f"{i},val{i}" for i in range(1000))
+                    return f"a,b\n{rows}".encode()
+            return R()
+
+    class FakeContainer:
+        def get_blob_client(self, name):
+            return FakeBlobClient()
+
+    monkeypatch.setattr(ing, "get_container_client", lambda name: FakeContainer())
+    chunks = list(ing.stream_landing_csv_chunks("fake.csv", chunksize=300))
+    assert sum(len(c) for c in chunks) == 1000
+    assert len(chunks) == 4  # 300,300,300,100
+
+
+def test_missing_file_raises_typed_exception(monkeypatch):
+    import src.ingestion as ing
+
+    class MissingBlobClient:
+        def exists(self):
+            return False
+
+    class MissingContainer:
+        def get_blob_client(self, name):
+            return MissingBlobClient()
+
+    monkeypatch.setattr(ing, "get_container_client", lambda name: MissingContainer())
+    with pytest.raises(ing.FileNotFoundInLanding):
+        list(ing.stream_landing_csv_chunks("nope.csv"))
+
+
+def test_empty_file_raises_typed_exception(monkeypatch):
+    import src.ingestion as ing
+
+    class EmptyBlobClient:
+        def exists(self):
+            return True
+
+        def download_blob(self):
+            class R:
+                def readall(_self):
+                    return b""
+            return R()
+
+    class EmptyContainer:
+        def get_blob_client(self, name):
+            return EmptyBlobClient()
+
+    monkeypatch.setattr(ing, "get_container_client", lambda name: EmptyContainer())
+    with pytest.raises(ing.FileIngestionError):
+        list(ing.stream_landing_csv_chunks("empty.csv"))

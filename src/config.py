@@ -38,6 +38,10 @@ class Settings:
     # Idempotency
     batch_date: str = os.getenv("BATCH_DATE", "")  # if blank, pipeline uses today (UTC)
 
+    # Scale controls
+    max_parallel_files: int = int(os.getenv("MAX_PARALLEL_FILES", "4"))
+    csv_chunk_size: int = int(os.getenv("CSV_CHUNK_SIZE", "50000"))
+
     @property
     def pg_conn_str(self) -> str:
         return (

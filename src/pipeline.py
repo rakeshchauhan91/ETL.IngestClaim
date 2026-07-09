@@ -9,13 +9,14 @@ duplicates rows. Safe to retry on failure (see @retry decorator).
 """
 import sys
 from datetime import date
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sqlalchemy import create_engine, text
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.config import settings
 from src.observability import get_logger, RunTracker
-from src.ingestion import read_landing_csv, load_to_bronze, read_bronze_as_df
+from src.ingestion import load_file_to_bronze, read_bronze_as_df
 from src.transform_silver import transform_patients, transform_claims, transform_encounters
 from src.transform_gold import build_dim_date, build_dim_patient, build_fact_claims, build_fact_encounters
 
@@ -56,13 +57,52 @@ def run_pipeline():
     tracker.start_run()
 
     try:
-        # ---------------- EXTRACT + BRONZE ----------------
-        for entity, filename in LANDING_FILES.items():
-            with tracker.step(f"extract_bronze_{entity}") as result:
-                df = read_landing_csv(filename)
-                inserted = load_to_bronze(engine, f"{entity}_raw", df, filename, batch_date, tracker.run_id)
-                result["rows_in"] = len(df)
-                result["rows_out"] = inserted
+        # ---------------- EXTRACT + BRONZE (per-file isolation, parallel) ----------------
+        # Each file is ingested independently and streamed in chunks (see
+        # ingestion.load_file_to_bronze). Files have no dependency on each
+        # other, so the actual I/O runs concurrently - as source count grows
+        # beyond 3 CSVs, wall-clock time stays roughly flat instead of
+        # growing linearly. A missing/corrupt file is recorded in
+        # audit.file_ingestion_log and does NOT abort the other files - but
+        # DOES fail the overall run afterward, so nothing silently goes
+        # stale while looking "successful".
+        file_results = {}
+        with ThreadPoolExecutor(max_workers=min(len(LANDING_FILES), settings.max_parallel_files)) as pool:
+            futures = {
+                pool.submit(load_file_to_bronze, engine, f"{entity}_raw", filename, entity,
+                            batch_date, tracker.run_id): entity
+                for entity, filename in LANDING_FILES.items()
+            }
+            for fut in as_completed(futures):
+                entity = futures[fut]
+                try:
+                    file_results[entity] = fut.result()
+                except Exception as e:
+                    # Should be rare - load_file_to_bronze already catches its own
+                    # errors - but guards against anything truly unexpected (e.g.
+                    # thread pool internals) from silently losing a file's result.
+                    file_results[entity] = {"status": "FAILED", "rows_read": 0, "rows_inserted": 0, "error": str(e)}
+
+        # Record one audit step per file (cheap now - the actual work is done;
+        # this just writes the pipeline_run_steps row for each file's outcome).
+        # Each file's step is recorded independently - one failure must not
+        # prevent the other files' steps from being logged.
+        for entity, file_result in file_results.items():
+            try:
+                with tracker.step(f"extract_bronze_{entity}") as result:
+                    result["rows_in"] = file_result["rows_read"]
+                    result["rows_out"] = file_result["rows_inserted"]
+                    if file_result["status"] != "SUCCESS":
+                        raise RuntimeError(
+                            f"{LANDING_FILES[entity]}: {file_result['status']} - {file_result.get('error')}"
+                        )
+            except RuntimeError:
+                pass  # already recorded as a FAILED step by tracker.step; keep going
+
+        failed_files = {e: r for e, r in file_results.items() if r["status"] != "SUCCESS"}
+        if failed_files:
+            details = "; ".join(f"{e}: {r['status']} - {r.get('error')}" for e, r in failed_files.items())
+            raise RuntimeError(f"File ingestion failed for {len(failed_files)} file(s): {details}")
 
         # ---------------- SILVER ----------------
         quarantine_rates = {}

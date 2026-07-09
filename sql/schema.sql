@@ -43,6 +43,26 @@ CREATE TABLE IF NOT EXISTS audit.quarantine (
     quarantined_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Per-FILE tracking, separate from per-STEP tracking in pipeline_run_steps.
+-- One row per source file per run: lets you answer "did claims.csv load
+-- today, and if not, exactly why" without grepping container logs.
+CREATE TABLE IF NOT EXISTS audit.file_ingestion_log (
+    id BIGSERIAL PRIMARY KEY,
+    run_id UUID NOT NULL,
+    source_file TEXT NOT NULL,
+    entity TEXT NOT NULL,
+    status TEXT NOT NULL,               -- SUCCESS / FAILED / MISSING / PARTIAL
+    file_size_bytes BIGINT,
+    rows_read INT DEFAULT 0,
+    rows_inserted INT DEFAULT 0,
+    chunks_processed INT DEFAULT 0,
+    error_message TEXT,
+    started_at TIMESTAMPTZ DEFAULT now(),
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_file_ingestion_log_run ON audit.file_ingestion_log(run_id);
+CREATE INDEX IF NOT EXISTS idx_file_ingestion_log_file ON audit.file_ingestion_log(source_file, started_at DESC);
+
 -- ---------------- BRONZE (append-only, dedup by row hash) ----------------
 CREATE TABLE IF NOT EXISTS bronze.patients_raw (
     row_hash TEXT PRIMARY KEY,          -- sha256 of raw row -> idempotent re-ingest
